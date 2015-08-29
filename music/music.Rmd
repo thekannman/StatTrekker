@@ -1,0 +1,116 @@
+What is the optimal size of a dataset? If you have an unlimited amount of time and hard drive space, then answer is always 'bigger'. Larger datasets mean more certainty in any analysis. More training data means more predictive power in any fitted model. More data also means more time spent loading, analyzing, and fitting. My hard drive only holds a terabyte, so I wouldn't expect this blog to cover datasets larger than a few hundred gigabyte anytime in the near future. That being said, my job often requires me to work with simulations that are upwards of 3 terabytes.
+
+The next couple of blogs will delve into a dataset that is nearly 300 gigabytes in size, the <a href=http://labrosa.ee.columbia.edu/millionsong/>Million Song Dataset</a>. As the name suggests, this dataset contains information about a million contemporary popular songs. The information is a mixture of audio features, e.g., loudness and timbre, and metadata, e.g., release year and artist.
+
+There are several questions that one could try to answer using this sort of data. Are specific audio features good predictors of a song's popularity? What aspects of music have and haven't changed over the 90 years spanned by the data? Which artists' songs are most similar to those of Nirvana? Is Kanye really as unique as he seems to think he is? Okay, We actually can't say anything about Kanye as a person, but maybe we can see if his music is unique.
+
+
+### Walkthrough of the code
+** This section is more tutorial than blog. Feel free to skip it, but it is always here if you need/want it. <A HREF="#results">Click here to skip to the next section</A> **
+
+These libraries are needed to run the code for this post
+```{r, results='hide', message=F, warning=F}
+library(rhdf5)
+library(RCurl)
+library(RSQLite)
+library(data.table)
+library(plotly)
+library(plyr)
+library(dplyr)
+```
+
+Why don't we ease into our analysis by looking at some of the song metadata. The metadata file is available separately from the rest of the data and is much easier to deal with at only 712 megabytes. Here is the R code to download the metadata:
+```{r eval=F}
+url <- "http://labrosa.ee.columbia.edu/millionsong/sites/default/files/AdditionalFiles/track_metadata.db"
+download.file(url, "track_metadata.db", "auto")
+```
+
+Note the extension on the above file, .db. This file is an SQLite database. If you want to freely roam the world of data, you'll need to obtain some basic familiarity with SQL commands. Courtesy of the RSQLite library, you can do essentially anything you need to with SQLite databases from within R. The following function will allow us to grab tables from the database with ease. Note that we are using data.tables here instead of data.frames. Data.tables have some significant advantages in speed which will come in handy with this larger dataset. 
+```{r}
+fetch  <- function(db, query, n = -1) {
+  result <- dbSendQuery(db, query)
+  data <- dbFetch(result, n)
+  dbClearResult(result)
+  return(as.data.table(data))
+}
+```
+
+The first step in grabbing data from a SQLite database is to open a connection to the database.
+```{r}
+metadata.db <- dbConnect(SQLite(), dbname='track_metadata.db')
+```
+
+Now let's see what is in the database.
+```{r}
+dbListTables(metadata.db)
+```
+
+Since there's just one table, we may as well just load the entire thing into memory. Here is the first SQL command that we have come across. the ***SELECT*** command indicates what columns you want to grab from the table. The use of *** * *** in this case means that we select all columns. The remainder of the command says that the columns we want are in the songs table. Since we are done with the database after this step, the second command in this code block closes our connection to it.
+```{r, results='hide'}
+songs <- fetch(metadata.db, "SELECT * FROM songs")
+dbDisconnect(metadata.db)
+```
+
+Now we have our data loaded, so let's see what it contains.
+```{r}
+head(songs, n=3)
+```
+
+The id variables won't be useful to us in this early analysis, so let's just get rid of them to make this easier to look at.
+```{r, results='hide'}
+songs[,c("track_id","song_id","artist_id","artist_mbid","track_7digitalid"):=NULL]
+```
+```{r}
+head(songs, n=3)
+```
+
+Okay, now that is quite a bit easier to look at. The last two columns, ***shs_perf*** and ***shs_work*** have to do with cover songs, so I'll probably ignore those for now. The first thing that caught my eye in this table was ***duration***, so let's take a look at that. First, however, let's change the units from seconds to minutes.
+```{r, results='hide'}
+songs[,duration:=duration/60]
+```
+
+For reasons that will become evident in a moment, I am also going to create a new column with the decade of the song releases.
+```{r, results='hide'}
+songs[,decade:=floor(songs$year/10)*10]
+```
+
+<A NAME="results"></A>
+
+### Song durations
+```{r, eval=F}
+plot_ly(songs, x=duration, type="histogram") %>% 
+  layout(xaxis=list(title="Duration(minutes?)"), hovermode='closest')
+```
+
+It seems that the distribution of song times peaks at about 3.5-4.0 minutes, but there is a very long tail out to lengthier songs. A reasonable next step would seem to be looking at how the duration of songs has changed over time. 
+```{r, eval=F}
+plot_ly(songs[,list(mean=mean(duration),sd=1.96*sd(duration)/sqrt(length(duration))),by=decade][year!=0], x=decade, y=mean, 
+        error_y=list(type="data", array=sd), mode="markers") %>% 
+  layout(hovermode='closest')
+```
+
+Now here we have something interesting. It seems that songs from the 1970s onward have been longer than in previous decades. As statisticians, we should really make sure that the difference is statistically significant. This looks like a job for a Student's t-Test! Before running a t-test, we much check to see if the variances are equal.
+```{r, results='hide'}
+songs[,pre_1970:=year<1970]
+```
+```{r}
+pre = songs[pre_1970==T][year!=0]$duration
+post = songs[pre_1970==F]$duration
+var.test(pre,post)
+```
+
+Since the confidence interval doesn't include 1.00, the variances are not equal. That is all the information we need to run the t-test.
+```{r}
+t.test(pre,post, var.equal=F, paired=F, conf.level=.95, alternative='less')
+```
+
+There we have it. The confidence interval doesn't include 0.00, so we can be at least 95% certain that the result is significant. Of course, this gives us no information about why the average song duration increased going into the 1970s. If you have any insight as to the reason, please let me know in the comment section.
+
+As long as we are on the topic of song durations, why not see if there si any relation between an artist's hottness and their mean song duration. For this, I'm going to use a different plotting system, ggplot, because it prints a nice confidence interval around the slope line. This makes determining the signifance of a regression relation much easier. 
+```{r, eval=F}
+ggplot(ddply(songs[artist_hotttnesss!=0][artist_hotttnesss!=-1], .(artist_name), summarise, duration=mean(duration), artist_hotttnesss=mean(artist_hotttnesss)), aes(x=duration, y=artist_hotttnesss)) + geom_point() + geom_smooth(method="lm")
+```
+
+So shorter songs make for more popular artists. I can't say that's very surprising information, but at least we have some real statistical evidence for it now.
+
+I think that's a good place to stop for now. Next time, we'll get out of the metadata and into the audio features. As always, feel free to leave some feedback. 

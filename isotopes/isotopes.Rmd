@@ -1,0 +1,251 @@
+
+### The Motivation
+I am very interested in finding new ways to make data accessible and understandable to as many people as possible. Some of the best tools that we have for that are plots. In most cases, people can glean quite a bit more from a visual representation than they ever could from tabular data. There is, however, always room for further improvement.
+
+One problem I've always had with plots is their static nature. I watch movies like Minority Report and Iron Man where I see people manipulating graphs and data in a seamless fashion, and I want to experience that sensation. I then go back to programs like Excel and Origin where I find myself changing upwards of half a dozen sizes and setting just to allow me to resize a single graph without its proportions going completely out of whack. Sci-fi promised me interactive graphs that were easy to use, and the tech world is finally starting to deliver on that promise. Sci-fi also promised me a tricorder, but that's a story for another day.
+
+There are a few ways of creating interactive graphs. My personal favorite is through <a href="https://plot.ly">Plotly</a>. It has APIs for Python, R, MATLAB, JavaScript, and other languages/programs. You can also input data directly on the website, so knowledge of a programming language is not necessary. The best part is that most of Plotly's features are completely free. As a graduate student, I can't stress how important that particular factor is. 
+
+
+### Walkthrough of the code
+** This section is more tutorial than blog. Feel free to skip it, but it is always here if you need/want it. <A HREF="#results">Click here to skip to the next section</A> **
+
+These libraries are needed to run the remainder of the code
+```{r, results='hide', message=F, warning=F}
+library(RCurl)
+library(rjson)
+library(plyr)
+library(plotly)
+```
+
+First we'll download the data and convert it from JSON format to something more useful in R.
+```{r}
+request.url <- "http://www.nist.gov/srd/srd_data/srd144_Atomic_Weights_and_Isotopic_Compositions_for_All_Elements.json"
+elements.info <- fromJSON(getURL(request.url))
+```
+
+Now let's take a look at the data
+```{r}
+summary(elements.info)
+```
+
+It appears that everything is actually in a list called **data**, so let's replace **elements.info** with just that list.
+```{r}
+elements.info <- elements.info$data
+```
+
+Now let's take a look at the information in this list
+```{r}
+length(elements.info)
+head(summary(elements.info))
+```
+
+So there are 117 chemical elements in the dataset and each is represented by a list of information. Let's take a look at the list for the first element.
+```{r}
+element.1 <- elements.info[[1]]
+summary(element.1)
+```
+
+Now we are starting to get down to a layer that contains some basic data rather than just lists. We'll set aside the **isotopes** list for a moment and see what else we've found.
+```{r}
+element.1$`Atomic Symbol`
+element.1$`Atomic Number`
+element.1$Notes
+element.1$`Standard Atomic Weight`
+```
+
+The **Atomic Symbol** tells us that our first element is hydrogen; no real surprise there. We also have it's **Atomic Number**, i.e., the number of protons in its nucleus and two other pieces of information that we don't yet know how to interpret. The **Notes** as well as the notation for the **Standard Atomic Weight** are covered in the data dictionary that accompanies this dataset: http://www.nist.gov/srd/srd_data/srd144_Data_Dictionary.docx. For now, we'll just leave these alone and take a look at the **isotopes** list.
+
+```{r}
+head(summary(element.1$isotopes))
+```
+
+This should look familiar. Yet again we find ourselves staring at a list of lists, so let's take a look at the first sub-list.
+```{r}
+isotope.1 <- element.1$isotopes[[1]]
+summary(isotope.1)
+```
+
+Finally we have reached a layer where there are no more lists. I would now like us to observe a moment of silence for those that gave up on this blog before we reached the darkest depths of the dataset. Data science is not all fun and games, people. Sometimes it is all about navigating layers upon layers of questionably-formatted data. Shall we finally take a look at the last dark recess of our first dataset?
+```{r}
+isotope.1
+```
+
+Hmm, **Atomic Symbol** seems to have shown up again; that is rather confusing. Let's take a look at the second isotope to see why they might have put that under the **isotopes** list.
+```{r}
+isotope.2 <- element.1$isotopes[[2]]
+isotope.2$`Atomic Symbol`
+```
+
+Ah, that explains it: the creators of the dataset wanted to include the isotope-specific atomic symbols. Given that those only exist for isotopes of hydrogen, don't expect them to show up very often for the remainder of this post. The rest of the isotopic information, on the other hand, seems very useful. We can now add the following to the information we have found in the dataset: **Mass Number** (sum of protons and neutrons), **Isotopic Composition** (fractional natural abundance of the isotope), and **Relative Atomic Mass** (mass in units of 1/12 the mass of carbon 12).
+
+Unfortunately, it appears that the creators of the dataset chose to leave the **Isotopic Composition** element off the artifically-produced isotopes rather than just setting the value to 0 or NA. This will have to be remembered when we try to reformat the data.
+
+It is now time to bring our initial exploration to a close. We now know where the data is and what it looks like, so we are ready to reformat it into a form more useful for our later analysis. We will do this by applying a custom function designed for our specific needs to each of the 117 items in our list of chemical elements. This is where the beauty of R truly shows through. In any other language I've used, we would need to explicitly include a loop to make this happen, but in R we need only use the **lapply** function.
+
+We are getting ahead of ourselves though. Before using **lapply** we must have a function that we wish to apply across the list. I will show the entire function first followed by a more detailed breakdown, so don't worry if this next chunk of code looks daunting. The steps marked in the function are there solely to make it easier to discuss below. 
+```{r}
+read.element <- function(x) {
+  # Step 1
+  isotope.df <- ldply(x$isotopes, data.frame)
+  # Step 2  
+  if (!("Isotopic.Composition" %in% names(isotope.df)))
+    isotope.df$Isotopic.Composition <- NA
+  # Step 3
+  isotope.df <- isotope.df[c("Atomic.Symbol", "Mass.Number", 
+                            "Isotopic.Composition", "Relative.Atomic.Mass")]
+  # Step 4
+  names(isotope.df)[1] <- "Isotope.Symbol"
+  # Step 5
+  rows <- nrow(isotope.df)
+  isotope.df$Atomic.Symbol <- rep(x$"Atomic Symbol", rows)
+  isotope.df$Atomic.Number <- rep(x$"Atomic Number", rows)
+  if ("Notes" %in% names(x))
+    isotope.df$Notes <- rep(x$Notes, rows)
+  else
+    isotope.df$Notes <- NA
+  if ("Standard Atomic Weight" %in% names(x))
+    isotope.df$Standard.Atomic.Weight <- rep(x$"Standard Atomic Weight", rows)
+  else
+    isotope.df$Standard.Atomic.Weight <- NA
+  # Step 6
+  isotope.df
+}
+```
+
+In step #1, we did was to turn the isotope list into a dataframe using the **ldply** function. For those not familiar with R, dataframes are an incredibly versatile type that nearly always makes analysis tasks easier. Step #2 just involved adding the **Isotopic.Composition** column -- populated with NAs -- to any isotopes that didn't already have it. Since the column order wasn't uniform across the isotopes, in Step #3, we rearranged the columns to a standard format. 
+
+Step #4 exists to differentiate the **Atomic Symbol** columns in the element list and in the isotope list by renaming the latter. Since we want our final dataframe to have a row for each isotope, step #5 replicates the elemental information across each isotope and fills in the **Notes** and **Standard.Atomic.Weight** columns if they are missing. Step #6 isn't really another step, but for those not familiar with R I thought I would point out that R functions return the value of the last evaluated expression. This makes the use of an explicit return function largely unnecessary.
+
+So that was a long explanation, let's make this next code chunk shorter. Here is the application of the above function across our main list. The second line converts the list we just made into a dataframe.
+```{r}
+element.df <- lapply(elements.info, read.element)
+element.df <- do.call(rbind.data.frame, element.df)
+```
+
+Let's take a look at the dataframe we've created. The first questions that comes to my mind are 'How big is it?' and 'What's in it?'
+```{r}
+dim(element.df)
+str(element.df)
+```
+
+Okay, 3349 rows. With 117 elements and multiple isotopes per element, that seems like a reasonable number. Now let's look at a sampling of various rows from the dataframe. I'm just going to pick a few that highlight some of the variety of data we are working with.
+```{r}
+element.df[c(1,100,1000,2985,3300),]
+```
+
+Both the **Isotopic.Composition** and **Relative.Atomic.Mass** columns have an uncertainty measure that we will want to get rid of for our current purposes. Typically I would save this to a separate column, but let's just delete it here. This will be easier to do if we change both of those columns from factors to characters. While we are at it, we may as well change the **Mass.Number** and **Atomic.Number** columns to numeric. All of this can be accomplished using the mutate function which makes modifying columns of a dataframe much simpler.
+```{r}
+element.df <- mutate(element.df, Mass.Number = as.numeric(Mass.Number), 
+                     Atomic.Number = as.numeric(Atomic.Number), 
+                     Isotopic.Composition = as.character(Isotopic.Composition), 
+                     Relative.Atomic.Mass = as.character(Relative.Atomic.Mass))
+```
+
+Now we'll use mutate again to get rid of the uncertainties from **Isotopic.Composition** and **Relative.Atomic.Mass**. This will require a chain of functions, but the gist is that we throw away everything after and including the opening parentheses.
+```{r}
+element.df <- mutate(element.df, 
+                     Isotopic.Composition = as.numeric(sapply(strsplit(Isotopic.Composition,split='\\('), "[[", 1)),
+                     Relative.Atomic.Mass = as.numeric(sapply(strsplit(Relative.Atomic.Mass,split='\\('), "[[", 1)))
+```
+
+That takes care of much of our reformatting, but we still have to deal with the mess of notations that are present in the **Standard.Atomic.Weight** column. The explanation for these formats is in the data dictionary that was mentioned above. In the case where a range is given, we are just going to use the median value for the rest of this analysis. The rest of the cleanup is going to involve removing enclosing brackets as well as uncertainties. This will all be accomplished in the following function wherein the first command removes enclosing brackets, the second takes the median if two values are present, and the third removes uncertainties.
+```{r}
+parse.weight <- function(weights) {
+  weights <- sapply(weights, function(x) ifelse(substring(x,1,1)=="[", 
+                                                substring(x,2,nchar(x)-1), x))
+  weights <- sapply(weights, function(x) ifelse(grepl(",", x)!=0,
+                                                lapply(strsplit(x,","), 
+                                                       function(y) median(as.numeric(y))),
+                                                x))
+  weights <- sapply(weights, function(x) ifelse(grepl("\\(", x)!=0,
+                                                lapply(strsplit(x,split='\\('), "[[", 1),
+                                                x))
+  as.numeric(weights)
+}
+```
+
+Now we will run the above function on the dataframe. While we are at it, I think we should add a new column with a more common notaiton for the isotopes. This will have the atomic symbol and the mass number separated by a dash as in He-4 or U-238.
+```{r}
+element.df <- mutate(element.df, Standard.Atomic.Weight = parse.weight(Standard.Atomic.Weight),
+                     Isotope.Notation = paste(Atomic.Symbol, Mass.Number, sep="-"))
+```
+
+And this one last mutation will give us a column stating whether the isotope occurs in nature. This information is already implicit in the **Isotopic.Composition** column which is <NA> for artifically created isotopes and a numeric value for naturally occurring isotopes. This step will simply make that information more explicit and easier to use in our plot. 
+```{r}
+element.df <- mutate(element.df, Naturally.Occurring = ifelse(is.na(Isotopic.Composition), 
+                                                             "Artifically Created", "Naturally Occurring"))
+```
+
+```{r eval=F, include=F}
+#ui <- pageWithSidebar(
+#  headerPanel("Atomic masses"),
+#  sidebarPanel(
+#    selectInput("nat.or.not", "Choose a subset:", 
+#               choices = c("All", "Naturally Occurring", "Not Naturally Occurring")),
+#    sliderInput("size", "Size", 1, 20, 10),
+#    sliderInput("opacity", "Opacity", 0, 1, 0.5),
+#    uiOutput("plot_ui")
+#  ),
+#  mainPanel(ggvisOutput("plot"))
+#)
+
+#server <- function(input, output) {
+#  dd <- reactive({
+#    if (input$nat.or.not == "Naturally Occurring")
+#      x <- subset(element.df, Naturally.Occurring==T)
+#    else if (input$nat.or.not == "Not Naturally Occurring")
+#      x <- subset(element.df, Naturally.Occurring==F)
+#    else
+#      x <- element.df
+#    x
+#  })
+#  input_size <- reactive(input$size)
+#  input_opacity <- reactive(input$opacity)
+#  dd %>% ggvis(~Atomic.Number, ~Relative.Atomic.Mass) %>%
+#    layer_points(key:= ~Isotope.Notation, fill:=~color, 
+#                 size := input_size,
+#                 opacity := input_opacity)  %>%
+#    layer_model_predictions(model = "lm", se = TRUE) %>%
+#    add_tooltip(function(data) {data$Isotope.Notation}, "hover")  %>%
+#    bind_shiny("plot", "plot_ui")
+  #ggplot(dd, aes(x=Atomic.Number,y=Relative.Atomic.Mass)) + geom_point()
+#}
+#shinyApp(ui = ui, server = server)
+```
+
+We have finally reached the last step. I know this has seemed like a long, tedious process, but we are very close to the final payoff. This last block of code creates a plot of relative atomic mass vs. atomic number from our dataframe. The second line specifies that the hover text should include the isotope notation and, where applicable, the isotopic composition. We color the dots by whether they are naturally occurring. I've also decreased the opacity given the large number of data points. The last line includes a change to the hovermode which was necessary since multiple points shared the same x value.
+```{r, eval=F}
+plot_ly(element.df, x=Atomic.Number, y=Relative.Atomic.Mass, mode="markers", 
+        text=paste0(Isotope.Notation,ifelse(Naturally.Occurring=="Naturally Occurring", 
+                                            paste("<Br>Natural Abundance: ",Isotopic.Composition), "")), 
+        color=Naturally.Occurring, colors='Set1', opacity=0.5) %>% 
+  layout(xaxis=list(title="Atomic Number"), yaxis=list(title="Relative Atomic Mass"), hovermode='closest')
+```
+<br><br>
+
+### A look at the results
+<A NAME="results"></A>
+It turns out that wordpress.com doesn't allow JavaScript, so I will just post a static image here. You can view the interactive graph by <a href="https://plot.ly/~zkann/277/relative-atomic-mass-vs-atomic-number/">clicking this link.</a><br>
+<img src=https://plot.ly/~zkann/277.png>
+
+At this point in a post, I would typically start analyzing the information we have spent all this time sorting through. However, this post was really just about the design of cool, interacive plots, so I'm just going to proceed to show some other features of Plotly. For instance, you can add fit lines (linear or otherwise) to the graph without having to recreate it in R.<br>
+<img src=https://plot.ly/~zkann/283.png>
+
+You can hide or show individual data series.<br>
+<img src=https://plot.ly/~zkann/300.png>
+
+You can also modify the axes, the markers, the text, and several other aspects of the graph. This amount of versatility is common in graphing programs like Origin or Igor, but it is nice to find it in a form that is easy to use and integrates well with R, python, and several other programming languages. Additionally, Plotly has the advantage of being a free service and allowing the interactive plots to be easily made available online. 
+
+Another good service for interactive graphs in R is Shiny. There are several aspects of Shiny that I prefer to Plotly, particularly  Shiny's ability to introduce sliders, radial buttons, and other interaction devices into a graph. However, the online hosting for Shiny is far more limited unless you are willing to pay for it. 
+
+I think that's pretty much all I have to say about interactive graps for now. My plan for the next post is to take a look at the <a href="http://labrosa.ee.columbia.edu/millionsong/">Million Song Dataset</a>. Until then, feel free to leave some feedback.
+
+Since I've only shown some very simple plots here, I'll end this post with a few links to some really cool graphs I found on Plotly.<br>
+<a href="https://plot.ly/~JodyMcintyre/148/a-duck-floats/">A Duck!</a><br>
+<a href="https://plot.ly/~MattSundquist/11226/ibm-volatility/">IBM Volatility</a><br>
+<a href="https://plot.ly/~chris/15262/_5849-most-intense-earthquakes-since-2150-bc/">Earthqukes</a><br>
+<a href="https://plot.ly/~etpinard/294/fig-54b-joint-frequency-distribution-of-daily-cyclist-counts-at-two-montreal-sit/">Cyclist Counts</a><br>
+You can find numerous of other graphs on the <a href="https://plot.ly">Plotly website.</a>
+
+https://stattrekker.wordpress.com/contact-me/
